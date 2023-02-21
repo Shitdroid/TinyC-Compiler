@@ -16,6 +16,7 @@ int errorCount=0;
 int parameterOffset=4, stackOffset=-2,tempLineCount=0;
 string type,functionName;
 vector<string> typeList;
+vector<SymbolInfo*> parameterList;
 vector<NonTerminalData*> returnVariableList;
 
 ofstream logOutput;
@@ -25,7 +26,7 @@ ofstream codeOutput;
 ofstream optimizedCodeOutput;
 ofstream tempCode;
 bool inFunctionScope=false, enterScopeFlag=true;
-int exitScopeFlag=0;
+int exitScopeFlag=0,labelCount=1;
 
 SymbolTable *table=new SymbolTable(11);
 
@@ -37,6 +38,23 @@ void yyerror(string s)
 	errorOutput<<"Error at line "<<lineCount<<": "<<s<<"\n"<<endl;
     errorCount++;
 }
+
+/************************backPatch Functions***********************/
+
+map<int,string> hashMap;
+void backPatch(vector<int> list, string label){
+    for(auto x:list){
+        hashMap[x]=label;
+    }
+}
+
+vector<int> merge(vector<int> list1, vector<int> list2){
+    vector<int> list;
+    list.insert(list.end(),list1.begin(),list1.end());
+    list.insert(list.end(),list2.begin(),list2.end());
+    return list;
+}
+
 
 /************************Functions***********************/
 void logAndSetParseString(string rule, NonTerminalData* nonTerminalData){
@@ -71,6 +89,31 @@ void printParseTree(NonTerminalData* nonTerminalData, int indent=0){
         printParseTree(x,indent+1);
     }
     delete nonTerminalData;
+}
+
+void checkForArithmetic(NonTerminalData* nonTerminalData){
+    if(nonTerminalData->isArithmetic){
+        tempCode<<"\tPOP AX\n";
+        tempCode<<"\tCMP AX, 0\n";
+        tempLineCount+=2;
+        tempCode<<"\tJNZ L"<<to_string(labelCount)<<endl;
+        tempCode<<"\tMOV AX, 0\n";
+        tempCode<<"\tJMP L"<<to_string(labelCount+1)<<endl;
+        tempCode<<"L"<<to_string(labelCount)<<":\n";
+        tempCode<<"\tMOV AX, 1\n";
+        tempCode<<"L"<<to_string(labelCount+1)<<":\n";
+        tempCode<<"\tPUSH AX\n";
+        labelCount+=2;
+        tempLineCount+=9;
+    }
+}
+
+void reverseParameterOffset(){
+    parameterOffset=4;
+    for(int i=parameterList.size()-1;i>=0;i--){
+        parameterList[i]->setStackOffset(parameterOffset);
+        parameterOffset+=2;
+    }
 }
 /***************************End Functions Block*****************/
 
@@ -209,9 +252,60 @@ void copyFromTemp(){
     tempCode.close();
     ifstream tempCodeInput("tempCode.asm");
     string line;
+    int count=0;
     while(getline(tempCodeInput,line)){
-        codeOutput<<line<<endl;
+        codeOutput<<line;
+        if(hashMap.find(count)!=hashMap.end()){
+            codeOutput<<hashMap[count];
+        }
+        codeOutput<<endl;
+        count++;
     }
+}
+
+vector<string> tokenize(string str,char delim)
+{
+    vector<string> ret;
+
+    size_t start;
+    size_t end = 0;
+    
+    while ((start = str.find_first_not_of(delim, end)) != string::npos)
+    {
+        end = str.find(delim, start);
+        ret.push_back(str.substr(start, end - start));
+    }
+
+    return ret;
+}
+
+void optimizeCode(){
+    codeOutput.close();
+    ifstream codeInput("1905026_code.asm");
+    string curLine,prevLine;
+    vector<string>prevLineToken,curLineToken;
+    getline(codeInput,prevLine);
+    prevLineToken=tokenize(prevLine,' ');
+    while(getline(codeInput,curLine)){
+        curLineToken=tokenize(curLine,' ');
+        errorOutput<<curLine<<endl;
+        for(int i=0;i<curLineToken.size();i++)errorOutput<<curLineToken[i]<<endl;
+        if(prevLineToken[0]=="\tMOV" && curLineToken[0]=="\tMOV" && prevLineToken[1].substr(0,prevLineToken[1].length()-1)==curLineToken[2] && prevLineToken[2]==curLineToken[1].substr(0,curLineToken[1].length()-1)){
+            continue;
+        }
+        else if((prevLineToken[0]=="\tPUSH" && curLineToken[0]=="\tPOP" && prevLineToken[1]==curLineToken[1]) || (prevLineToken[0]=="\tPOP" && curLineToken[0]=="\tPUSH" && prevLineToken[1]==curLineToken[1])){
+            getline(codeInput,prevLine);
+            prevLineToken=tokenize(prevLine,' ');
+        }
+        else if((curLineToken[0]=="\tMUL" && curLineToken[2]=="1") || (curLineToken[0]=="\tADD" && curLineToken[2]=="0")) continue;
+        else{
+            optimizedCodeOutput<<prevLine<<endl;
+            prevLine=curLine;
+            prevLineToken=curLineToken;
+        }
+    }
+    optimizedCodeOutput<<prevLine<<endl;
+    codeInput.close();
 }
 
 
@@ -233,7 +327,7 @@ void copyFromTemp(){
 %type<nonTerminalData> start program unit var_declaration func_declaration func_definition parameter_list compound_statement
 %type<nonTerminalData> type_specifier declaration_list statements statement expression_statement variable expression
 %type<nonTerminalData> logic_expression rel_expression simple_expression term unary_expression factor argument_list
-%type<nonTerminalData> arguments 
+%type<nonTerminalData> arguments M N
 %type enterScope enterFunctionScope
 /* %start<nonTerminalData> start */
 
@@ -262,8 +356,11 @@ start : program
         codeOutput<<".CODE"<<endl;
         copyFromTemp();
         codeOutput<<
-        "new_line proc\n\tpush ax\n\tpush dx\n\tmov ah,2\n\tmov dl,cr\n\tint 21h\n\tmov ah,2\n\tmov dl,lf\n\tint 21h\n\tpop dx\n\tpop ax\n\tret\nnew_line endp\nprint_output proc  ;print what is in ax\n\tpush ax\n\tpush bx\n\tpush cx\n\tpush dx\n\tpush si\n\tlea si,number\n\tmov bx,10\n\tadd si,4\n\tcmp ax,0\n\tjnge negate\n\tprint:\n\txor dx,dx\n\tdiv bx\n\tmov [si],dl\n\tadd [si],'0'\n\tdec si\n\tcmp ax,0\n\tjne print\n\tinc si\n\tlea dx,si\n\tmov ah,9\n\tint 21h\n\tpop si\n\tpop dx\n\tpop cx\n\tpop bx\n\tpop ax\n\tret\n\tnegate:\n\tpush ax\n\tmov ah,2\n\tmov dl,'-'\n\tint 21h\n\tpop ax\n\tneg ax\n\tjmp print\nprint_output endp\nEND main"<<endl;
+        "new_line proc\n\tpush ax\n\tpush dx\n\tmov ah, 2\n\tmov dl, cr\n\tint 21h\n\tmov ah, 2\n\tmov dl, lf\n\tint 21h\n\tpop dx\n\tpop ax\n\tret\nnew_line endp\nprint_output proc  ;print what is in ax\n\tpush ax\n\tpush bx\n\tpush cx\n\tpush dx\n\tpush si\n\tlea si, number\n\tmov bx, 10\n\tadd si, 4\n\tcmp ax, 0\n\tjnge negate\n\tprint:\n\txor dx, dx\n\tdiv bx\n\tmov [si], dl\n\tadd [si], '0'\n\tdec si\n\tcmp ax, 0\n\tjne print\n\tinc si\n\tlea dx, si\n\tmov ah, 9\n\tint 21h\n\tpop si\n\tpop dx\n\tpop cx\n\tpop bx\n\tpop ax\n\tret\n\tnegate:\n\tpush ax\n\tmov ah, 2\n\tmov dl, '-'\n\tint 21h\n\tpop ax\n\tneg ax\n\tjmp print\nprint_output endp\nEND main"<<endl;
         // optimizeCode();
+        //optimize the assembly code after reading from file
+        codeOutput.close();
+        optimizeCode();
     }
 	;
 
@@ -386,7 +483,7 @@ func_declaration : type_specifier ID LPAREN enterFunctionScope parameter_list RP
         }
 		;
 
-func_definition : type_specifier ID LPAREN {functionName=$2->getName();}enterFunctionScope parameter_list RPAREN compound_statement
+func_definition : type_specifier ID LPAREN {functionName=$2->getName();}enterFunctionScope parameter_list {reverseParameterOffset();}RPAREN compound_statement
         {
             SymbolInfo* temp=table->lookUpInParentScope($2->getName());
             if(temp!=NULL && temp->getIsFunction()){
@@ -448,14 +545,14 @@ func_definition : type_specifier ID LPAREN {functionName=$2->getName();}enterFun
             tempLineCount++;
             string rule="func_definition : type_specifier ID LPAREN parameter_list RPAREN compound_statement";
             $$ = new NonTerminalData();
-            $$->endLineNumber=$8->getEnd();
+            $$->endLineNumber=$9->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($3));
             $$->expandedParseTree.push_back($6);
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($7));
-            $$->expandedParseTree.push_back($8);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($8));
+            $$->expandedParseTree.push_back($9);
             logAndSetParseString(rule,$$);
             inFunctionScope=false;
             stackOffset=-2;
@@ -537,6 +634,7 @@ parameter_list  : parameter_list COMMA type_specifier ID
             else {
                 SymbolInfo* temp=new SymbolInfo($4->getName(),$3->getName(),false, parameterOffset);
                 table->insertSymbol(temp);
+                parameterList.push_back(temp);
                 parameterOffset+=2;
             }
             typeList.push_back($3->getName());
@@ -575,6 +673,7 @@ parameter_list  : parameter_list COMMA type_specifier ID
             else {
                 SymbolInfo* temp=new SymbolInfo($2->getName(),$1->getName(),false, parameterOffset);
                 table->insertSymbol(temp);
+                parameterList.push_back(temp);
                 parameterOffset+=2;
             }
             typeList.push_back($1->getName());
@@ -842,29 +941,34 @@ statement : var_declaration
             $$->expandedParseTree.push_back($1);
             logAndSetParseString(rule,$$);
         }
-        | FOR LPAREN {enterScopeFlag=false;table->enterScope();} expression_statement expression_statement expression RPAREN statement
+        | FOR LPAREN {enterScopeFlag=false;table->enterScope();} expression_statement M expression_statement M expression RPAREN {tempCode<<"\tJMP "<<$5->name<<endl;tempLineCount++;} M statement {tempCode<<"\tJMP "<<$7->name<<endl;tempLineCount++;} M
         {
             table->printAllScope(logOutput);
             table->exitScope();
             string rule="statement : FOR LPAREN expression_statement expression_statement expression RPAREN statement";
             $$ = new NonTerminalData();
-            $$->endLineNumber=$8->getEnd();
+            $$->endLineNumber=$12->getEnd();
             $$->startLineNumber=$1->getStart();
+            backPatch($6->trueList,$11->name);
+            backPatch($6->falseList,$14->name);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->expandedParseTree.push_back($4);
-            $$->expandedParseTree.push_back($5);
             $$->expandedParseTree.push_back($6);
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($7));
             $$->expandedParseTree.push_back($8);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($9));
+            $$->expandedParseTree.push_back($12);
             logAndSetParseString(rule,$$);
             enterScopeFlag=true;
         }
-        | IF LPAREN expression RPAREN statement %prec LOWER_THAN_ELSE
+        | IF LPAREN expression RPAREN M statement M %prec LOWER_THAN_ELSE
         {
             string rule="statement : IF LPAREN expression RPAREN statement";
             $$ = new NonTerminalData();
-            $$->endLineNumber=$5->getEnd();
+            $$->endLineNumber=$6->getEnd();
+            backPatch($3->trueList,$5->name);
+            $$->nextList=merge($3->falseList,$6->nextList);
+            backPatch($3->falseList,$7->name);
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
@@ -873,32 +977,38 @@ statement : var_declaration
             $$->expandedParseTree.push_back($5);
             logAndSetParseString(rule,$$);
         }
-        | IF LPAREN expression RPAREN statement ELSE statement
+        | IF LPAREN expression RPAREN M statement ELSE N M statement
         {
             string rule="statement : IF LPAREN expression RPAREN statement ELSE statement";
+            $$ = new NonTerminalData();
+            $$->endLineNumber=$10->getEnd();
+            $$->startLineNumber=$1->getStart();
+            backPatch($3->trueList,$5->name);
+            backPatch($3->falseList,$9->name);
+            $$->nextList=merge($6->nextList,$10->nextList);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
+            $$->expandedParseTree.push_back($3);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($4));
+            $$->expandedParseTree.push_back($6);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($7));
+            $$->expandedParseTree.push_back($10);
+            logAndSetParseString(rule,$$);
+        }
+        | WHILE M LPAREN expression RPAREN M statement {tempCode<<"\tJMP "<<$2->name<<endl;tempLineCount++;} M
+        {
+            string rule="statement : WHILE LPAREN expression RPAREN statement";
             $$ = new NonTerminalData();
             $$->endLineNumber=$7->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
-            $$->expandedParseTree.push_back($3);
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($4));
-            $$->expandedParseTree.push_back($5);
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($6));
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($3));
+            $$->expandedParseTree.push_back($4);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($5));
             $$->expandedParseTree.push_back($7);
-            logAndSetParseString(rule,$$);
-        }
-        | WHILE LPAREN expression RPAREN statement
-        {
-            string rule="statement : WHILE LPAREN expression RPAREN statement";
-            $$ = new NonTerminalData();
-            $$->endLineNumber=$5->getEnd();
-            $$->startLineNumber=$1->getStart();
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
-            $$->expandedParseTree.push_back($3);
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($4));
-            $$->expandedParseTree.push_back($5);
+            backPatch($4->trueList,$6->name);
+            backPatch($4->falseList,$9->name);
+            $$->nextList=$4->falseList;
             logAndSetParseString(rule,$$);
         }
         | PRINTLN LPAREN ID RPAREN SEMICOLON
@@ -967,6 +1077,9 @@ expression_statement 	: SEMICOLON
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
+            $$->isArithmetic=$1->isArithmetic;
+            $$->trueList=$1->trueList;
+            $$->falseList=$1->falseList;
             logAndSetParseString(rule,$$);
         }
 		;
@@ -1032,6 +1145,9 @@ expression : logic_expression
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->name=$1->getName();
+            $$->isArithmetic=$1->isArithmetic;
+            $$->trueList=$1->trueList;
+            $$->falseList=$1->falseList;   
             logAndSetParseString(rule,$$);
         }
         | variable ASSIGNOP logic_expression 
@@ -1042,6 +1158,21 @@ expression : logic_expression
             }
             if($1->getName()=="INT" && $3->getName()=="FLOAT"){
                 warningDataLoss($1->getStart());
+            }
+            if(!$3->isArithmetic){
+                tempCode<<"L"<<labelCount<<":\n";
+                tempCode<<"\tMOV AX, 1\n";
+                backPatch($3->trueList,"L"+to_string(labelCount));
+                labelCount++;
+                tempCode<<"\tJMP L"<<labelCount+1<<endl;
+                tempCode<<"L"<<labelCount<<":\n";
+                tempCode<<"\tMOV AX, 0\n";
+                backPatch($3->falseList,"L"+to_string(labelCount));
+                labelCount++;
+                tempCode<<"L"<<labelCount<<":\n";
+                tempCode<<"\tPUSH AX\n";
+                tempLineCount+=7;
+                labelCount++;
             }
             if(symbol->getIsArray()){
                 tempCode<<"\tPOP AX\n";
@@ -1101,20 +1232,35 @@ logic_expression : rel_expression
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->name=$1->getName();
+            $$->isArithmetic=$1->isArithmetic;
+            $$->trueList=$1->trueList;
+            $$->falseList=$1->falseList;
             logAndSetParseString(rule,$$);
         }
-        | rel_expression LOGICOP rel_expression 
+        | rel_expression {checkForArithmetic($1);} LOGICOP M rel_expression 
         {
-            if($1->getName()=="VOID" || $3->getName()=="VOID"){
+            if($1->getName()=="VOID" || $5->getName()=="VOID"){
                 errorInvalidVoidExpression($1->getStart());
             }
             string rule="logic_expression : rel_expression LOGICOP rel_expression";
+            checkForArithmetic($5);
             $$ = new NonTerminalData();
-            $$->endLineNumber=$3->getEnd();
+            if($3->getName()=="||"){
+                backPatch($1->falseList,$4->name);
+                $$->trueList=merge($1->trueList,$5->trueList);
+                $$->falseList=$5->falseList;
+            }
+            else if($3->getName()=="&&"){
+                backPatch($1->trueList,$4->name);
+                $$->trueList=$5->trueList;
+                $$->falseList=merge($1->falseList,$5->falseList);
+            }
+            $$->endLineNumber=$5->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
-            $$->expandedParseTree.push_back($3);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($3));
+            $$->expandedParseTree.push_back($5);
+            $$->isArithmetic=false;
             $$->name="INT";
             logAndSetParseString(rule,$$);
         }	
@@ -1128,6 +1274,9 @@ rel_expression	: simple_expression
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->name=$1->getName();
+            $$->isArithmetic=$1->isArithmetic;
+            $$->trueList=$1->trueList;
+            $$->falseList=$1->falseList;
             logAndSetParseString(rule,$$);
         }
 		| simple_expression RELOP simple_expression	
@@ -1143,6 +1292,20 @@ rel_expression	: simple_expression
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->expandedParseTree.push_back($3);
             $$->name="INT";
+            tempCode<<"\tPOP BX\n";
+            tempCode<<"\tPOP AX\n"; 
+            tempCode<<"\tCMP AX, BX\n";
+            tempLineCount+=3;
+            if($2->getName()=="==")tempCode<<"\tJE "<<endl;
+            else if($2->getName()=="!=")tempCode<<"\tJNE "<<endl;
+            else if($2->getName()=="<")tempCode<<"\tJL "<<endl;
+            else if($2->getName()=="<=")tempCode<<"\tJLE "<<endl;
+            else if($2->getName()==">")tempCode<<"\tJG "<<endl;
+            else if($2->getName()==">=")tempCode<<"\tJGE "<<endl;
+            $$->trueList.push_back(tempLineCount++);
+            tempCode<<"\tJMP "<<endl;
+            $$->falseList.push_back(tempLineCount++);
+            $$->isArithmetic=false;
             logAndSetParseString(rule,$$);
         }
 		;
@@ -1155,6 +1318,7 @@ simple_expression : term
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->name=$1->getName();
+            $$->isArithmetic=$1->isArithmetic;
             logAndSetParseString(rule,$$);
         }
         | simple_expression ADDOP term 
@@ -1181,6 +1345,7 @@ simple_expression : term
             else{
                 $$->name="INT";
             }
+            $$->isArithmetic=true;
             logAndSetParseString(rule,$$);
         }
         ;
@@ -1193,6 +1358,9 @@ term :	unary_expression
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->name=$1->getName();
+            $$->isArithmetic=$1->isArithmetic;
+            $$->trueList=$1->trueList;
+            $$->falseList=$1->falseList;
             logAndSetParseString(rule,$$);
         }
         | term MULOP unary_expression
@@ -1238,6 +1406,7 @@ term :	unary_expression
             $$->expandedParseTree.push_back($1);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->expandedParseTree.push_back($3);
+            $$->isArithmetic=true;
             logAndSetParseString(rule,$$);
         }
         ;
@@ -1260,6 +1429,7 @@ unary_expression : ADDOP unary_expression
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
             $$->expandedParseTree.push_back($2);
             $$->name=$2->getName();
+            $$->isArithmetic=true;
             logAndSetParseString(rule,$$);
         }
         | NOT unary_expression 
@@ -1274,6 +1444,10 @@ unary_expression : ADDOP unary_expression
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
             $$->expandedParseTree.push_back($2);
             $$->name="INT";
+            checkForArithmetic($2);
+            $$->isArithmetic=false;/////confused here
+            $$->trueList=$2->falseList;
+            $$->falseList=$2->trueList;
             logAndSetParseString(rule,$$);
         }
         | factor 
@@ -1285,6 +1459,9 @@ unary_expression : ADDOP unary_expression
             $$->expandedParseTree.push_back($1);
             $$->name=$1->getName();
             $$->value=$1->getValue();
+            $$->isArithmetic=$1->isArithmetic;
+            $$->trueList=$1->trueList;
+            $$->falseList=$1->falseList;
             logAndSetParseString(rule,$$);
         }
         ;
@@ -1336,6 +1513,7 @@ factor	: variable
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->name=$1->getName();
+            $$->isArithmetic=true;
             logAndSetParseString(rule,$$);
         }
         | ID LPAREN argument_list RPAREN
@@ -1371,6 +1549,7 @@ factor	: variable
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($4));
             if(symbolInfo!=NULL)$$->name=symbolInfo->getType();
             else $$->name="ERROR";
+            $$->isArithmetic=true;
             logAndSetParseString(rule,$$);
         }
         | LPAREN expression RPAREN
@@ -1383,6 +1562,9 @@ factor	: variable
             $$->expandedParseTree.push_back($2);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($3));
             $$->name=$2->getName();
+            $$->isArithmetic=$2->isArithmetic;
+            $$->trueList=$2->trueList;
+            $$->falseList=$2->falseList;
             logAndSetParseString(rule,$$);
         }
         | CONST_INT 
@@ -1397,6 +1579,7 @@ factor	: variable
             tempCode<<"\tPUSH AX"<<endl;
             tempLineCount+=2;
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
+            $$->isArithmetic=true;
             logAndSetParseString(rule,$$);
         }
         | CONST_FLOAT
@@ -1426,9 +1609,10 @@ factor	: variable
                 tempLineCount+=2;
                 if(symbol->getIsGlobal()){
                     tempCode<<"\tMOV AX, "<<symbol->getName()<<"[BX]\n";
+                    tempCode<<"\tPUSH AX\n";
                     tempCode<<"\tINC AX\n";
                     tempCode<<"\tMOV "<<symbol->getName()<<"[BX], AX\n";
-                    tempLineCount+=3;
+                    tempLineCount+=4;
                 }
                 else{
                     int offset=symbol->getStackOffset();
@@ -1444,14 +1628,16 @@ factor	: variable
                         tempLineCount+=2;
                     }
                     tempCode<<"\tMOV AX, [BP+SI]\n";
+                    tempCode<<"\tPUSH AX\n";
                     tempCode<<"\tINC AX\n";
                     tempCode<<"\tMOV [BP+SI], AX\n";
-                    tempLineCount+=3;
+                    tempLineCount+=4;
                 }
             }
             else{
                 if(symbol->getIsGlobal()){
                     tempCode<<"\tMOV AX, "<<symbol->getName()<<"\n";
+                    tempCode<<"\tPUSH AX\n";
                     tempCode<<"\tINC AX\n";
                     tempCode<<"\tMOV "<<symbol->getName()<<", AX\n";
                 }
@@ -1459,25 +1645,26 @@ factor	: variable
                     int offset=symbol->getStackOffset();
                     if(offset>0){
                         tempCode<<"\tMOV AX, [BP+"<<offset<<"]\n";
+                        tempCode<<"\tPUSH AX\n";
                         tempCode<<"\tINC AX\n";
                         tempCode<<"\tMOV [BP+"<<offset<<"], AX\n";
                     }
                     if(offset<0){
                         tempCode<<"\tMOV AX, [BP"<<offset<<"]\n";
+                        tempCode<<"\tPUSH AX\n";
                         tempCode<<"\tINC AX\n";
                         tempCode<<"\tMOV [BP"<<offset<<"], AX\n";
                     }
                 }
-                tempLineCount+=3;
+                tempLineCount+=4;
             }
-            tempCode<<"\tPUSH AX\n";
-            tempLineCount++;
             $$ = new NonTerminalData();
             $$->endLineNumber=$2->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->name=$1->getName();
+            $$->isArithmetic=true;
             logAndSetParseString(rule,$$);
         }
         | variable DECOP
@@ -1493,7 +1680,9 @@ factor	: variable
                 tempLineCount+=2;
                 if(symbol->getIsGlobal()){
                     tempCode<<"\tMOV AX, "<<symbol->getName()<<"[BX]\n";
-                    tempCode<<"\tINC AX\n";
+                    tempCode<<"\tPUSH AX\n";
+                    tempLineCount++;
+                    tempCode<<"\tDEC AX\n";
                     tempCode<<"\tMOV "<<symbol->getName()<<"[BX], AX\n";
                     tempLineCount+=3;
                 }
@@ -1511,6 +1700,8 @@ factor	: variable
                         tempLineCount+=2;
                     }
                     tempCode<<"\tMOV AX, [BP+SI]\n";
+                    tempCode<<"\tPUSH AX\n";
+                    tempLineCount++;
                     tempCode<<"\tDEC AX\n";
                     tempCode<<"\tMOV [BP+SI], AX\n";
                     tempLineCount+=3;
@@ -1519,33 +1710,38 @@ factor	: variable
             else{
                 if(symbol->getIsGlobal()){
                     tempCode<<"\tMOV AX, "<<symbol->getName()<<"\n";
-                    tempCode<<"\tINC AX\n";
+                    tempCode<<"\tPUSH AX\n";
+                    tempLineCount++;
+                    tempCode<<"\tDEC AX\n";
                     tempCode<<"\tMOV "<<symbol->getName()<<", AX\n";
                 }
                 else{
                     int offset=symbol->getStackOffset();
                     if(offset>0){
                         tempCode<<"\tMOV AX, [BP+"<<offset<<"]\n";
-                        tempCode<<"\tINC AX\n";
+                        tempCode<<"\tPUSH AX\n";
+                        tempLineCount++;
+                        tempCode<<"\tDEC AX\n";
                         tempCode<<"\tMOV [BP+"<<offset<<"], AX\n";
                     }
                     if(offset<0){
                         tempCode<<"\tMOV AX, [BP"<<offset<<"]\n";
+                        tempCode<<"\tPUSH AX\n";
+                        tempLineCount++;
                         tempCode<<"\tDEC AX\n";
                         tempCode<<"\tMOV [BP"<<offset<<"], AX\n";
                     }
                 }
                 tempLineCount+=3;
             }
-            tempCode<<"\tPUSH AX\n";
-            tempLineCount++;
             $$ = new NonTerminalData();
             $$->endLineNumber=$2->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->name=$1->getName(); 
-            logAndSetParseString(rule,$$);
+            $$->isArithmetic=true;
+            logAndSetParseString(rule, $$);
         }
         ;
 	
@@ -1620,7 +1816,20 @@ enterScope :
         }
         ;
 
+M   :
+    {
+        $$ = new NonTerminalData();
+        $$->name="L"+to_string(labelCount);
+        tempCode<<$$->name<<":"<<endl;
+        tempLineCount++;
+        labelCount++;
+    }
 
+N   :
+    {
+        $$ = new NonTerminalData();
+        $$->nextList.push_back(tempLineCount);
+    }
 %%
 int main(int argc,char *argv[])
 {
@@ -1642,7 +1851,6 @@ int main(int argc,char *argv[])
     parseOutput.close();
     errorOutput.close();
     logOutput.close();
-    codeOutput.close();
     optimizedCodeOutput.close();
     remove("tempCode.asm");
 	delete table;

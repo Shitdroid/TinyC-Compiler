@@ -9,7 +9,7 @@ public:
     float value=1;
     std::vector<NonTerminalData*> expandedParseTree;
     int startLineNumber,endLineNumber,offset;
-    bool isFunction;
+    bool isFunction,isArithmetic;
     std::string returnType;
     std::vector<std::string> functionTypeList;
     std::vector<int> trueList, falseList, nextList;

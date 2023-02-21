@@ -104,6 +104,9 @@ public:
     void setIsDefined(bool isdefined) {
         this->isdefined = isdefined;
     }
+    void setStackOffset(int stackOffset) {
+        this->stackOffset = stackOffset;
+    }
     void addFunctionType(std::string type) {
         functionTypeList.push_back(type);
     }
