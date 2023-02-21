@@ -3,7 +3,6 @@
 } */
 %{
 #include <bits/stdc++.h>
-#include "SymbolTable.h"
 #include "NonTerminalData.h"
 // #define YYSTYPE SymbolInfo*
 
@@ -14,13 +13,17 @@ int yylex(void);
 extern FILE *yyin;
 int lineCount=1;
 int errorCount=0;
-string type;
+int parameterOffset=4, stackOffset=-2,tempLineCount=0;
+string type,functionName;
 vector<string> typeList;
 vector<NonTerminalData*> returnVariableList;
 
 ofstream logOutput;
 ofstream errorOutput;
 ofstream parseOutput;
+ofstream codeOutput;
+ofstream optimizedCodeOutput;
+ofstream tempCode;
 bool inFunctionScope=false, enterScopeFlag=true;
 int exitScopeFlag=0;
 
@@ -202,6 +205,15 @@ void errorInvalidArgumentsType(string name, int line, int position){
     errorCount++;
 }
 
+void copyFromTemp(){
+    tempCode.close();
+    ifstream tempCodeInput("tempCode.asm");
+    string line;
+    while(getline(tempCodeInput,line)){
+        codeOutput<<line<<endl;
+    }
+}
+
 
 /******************************End Error Handlers Block****************/
 
@@ -247,6 +259,11 @@ start : program
         printParseTree($$);
         logOutput<<"Total Lines: "<<lineCount<<endl;
         logOutput<<"Total Errors: "<<errorCount<<endl;
+        codeOutput<<".CODE"<<endl;
+        copyFromTemp();
+        codeOutput<<
+        "new_line proc\n\tpush ax\n\tpush dx\n\tmov ah,2\n\tmov dl,cr\n\tint 21h\n\tmov ah,2\n\tmov dl,lf\n\tint 21h\n\tpop dx\n\tpop ax\n\tret\nnew_line endp\nprint_output proc  ;print what is in ax\n\tpush ax\n\tpush bx\n\tpush cx\n\tpush dx\n\tpush si\n\tlea si,number\n\tmov bx,10\n\tadd si,4\n\tcmp ax,0\n\tjnge negate\n\tprint:\n\txor dx,dx\n\tdiv bx\n\tmov [si],dl\n\tadd [si],'0'\n\tdec si\n\tcmp ax,0\n\tjne print\n\tinc si\n\tlea dx,si\n\tmov ah,9\n\tint 21h\n\tpop si\n\tpop dx\n\tpop cx\n\tpop bx\n\tpop ax\n\tret\n\tnegate:\n\tpush ax\n\tmov ah,2\n\tmov dl,'-'\n\tint 21h\n\tpop ax\n\tneg ax\n\tjmp print\nprint_output endp\nEND main"<<endl;
+        // optimizeCode();
     }
 	;
 
@@ -369,7 +386,7 @@ func_declaration : type_specifier ID LPAREN enterFunctionScope parameter_list RP
         }
 		;
 
-func_definition : type_specifier ID LPAREN enterFunctionScope parameter_list RPAREN compound_statement
+func_definition : type_specifier ID LPAREN {functionName=$2->getName();}enterFunctionScope parameter_list RPAREN compound_statement
         {
             SymbolInfo* temp=table->lookUpInParentScope($2->getName());
             if(temp!=NULL && temp->getIsFunction()){
@@ -404,6 +421,7 @@ func_definition : type_specifier ID LPAREN enterFunctionScope parameter_list RPA
             }
             returnVariableList.clear();
             SymbolInfo* symbolInfo=new SymbolInfo($2->getName(),$1->getName(),true,false);
+            int returnSize=typeList.size()*2;
             for(auto x:typeList){
                 symbolInfo->addFunctionType(x);
             }
@@ -413,20 +431,37 @@ func_definition : type_specifier ID LPAREN enterFunctionScope parameter_list RPA
             table->insertSymbolInParentScope(symbolInfo);
             table->printAllScope(logOutput);
             table->exitScope();
+            tempCode<<"exit_"<<$2->getName()<<":"<<endl;
+            tempCode<<"\tMOV SP, BP"<<endl;
+            tempCode<<"\tPOP BP"<<endl;
+            tempLineCount+=3;
+            if(functionName=="main"){
+                tempCode<<"\tMOV AX, 4CH"<<endl;
+                tempCode<<"\tINT 21H"<<endl;
+                tempLineCount+=2;
+            }
+            else {
+                tempCode<<"\tRET "<<returnSize<<endl;
+                tempLineCount++;
+            }
+            tempCode<<$2->getName()<<" ENDP"<<endl;
+            tempLineCount++;
             string rule="func_definition : type_specifier ID LPAREN parameter_list RPAREN compound_statement";
             $$ = new NonTerminalData();
-            $$->endLineNumber=$7->getEnd();
+            $$->endLineNumber=$8->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($3));
-            $$->expandedParseTree.push_back($5);
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($6));
-            $$->expandedParseTree.push_back($7);
+            $$->expandedParseTree.push_back($6);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($7));
+            $$->expandedParseTree.push_back($8);
             logAndSetParseString(rule,$$);
             inFunctionScope=false;
+            stackOffset=-2;
+            parameterOffset=4;
         }
-		| type_specifier ID LPAREN enterFunctionScope RPAREN compound_statement
+		| type_specifier ID LPAREN {functionName=$2->getName();} enterFunctionScope RPAREN compound_statement
         {
             SymbolInfo* temp=table->lookUpInParentScope($2->getName());
             if(temp!=NULL && temp->getIsFunction()){
@@ -453,6 +488,19 @@ func_definition : type_specifier ID LPAREN enterFunctionScope parameter_list RPA
                     }
                 }
             }
+            tempCode<<"exit_"<<$2->getName()<<":"<<endl;
+            tempCode<<"\tMOV SP, BP"<<endl;
+            tempCode<<"\tPOP BP"<<endl;
+            tempLineCount+=3;
+            if(functionName=="main"){
+                tempCode<<"\tMOV AX, 4CH"<<endl;
+                tempCode<<"\tINT 21H"<<endl;
+                tempLineCount+=2;
+            }
+            else tempCode<<"\tRET"<<endl;
+            tempLineCount++;
+            tempCode<<$2->getName()<<" ENDP"<<endl;
+            tempLineCount++;
             returnVariableList.clear();
             SymbolInfo* symbolInfo=new SymbolInfo($2->getName(),$1->getName(),true,false);
             if(temp!=NULL)temp->setIsDefined(true);
@@ -462,15 +510,17 @@ func_definition : type_specifier ID LPAREN enterFunctionScope parameter_list RPA
             table->exitScope();
             string rule="func_definition : type_specifier ID LPAREN RPAREN compound_statement";
             $$ = new NonTerminalData();
-            $$->endLineNumber=$6->getEnd();
+            $$->endLineNumber=$7->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($3));
-            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($5));
-            $$->expandedParseTree.push_back($6);
+            $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($6));
+            $$->expandedParseTree.push_back($7);
             logAndSetParseString(rule,$$);
             inFunctionScope=false;
+            stackOffset=-2;
+            parameterOffset=4;
         }
         ;				
 
@@ -483,7 +533,12 @@ parameter_list  : parameter_list COMMA type_specifier ID
                 else errorRedeclaration($4->getName(),$4->getStart(),true);
             }
             else if($3->getName()=="VOID") errorVoidParameter($4->getName(),$4->getStart());
-            table->insertSymbol($4->getName(),$3->getName());
+            if(!inFunctionScope)table->insertSymbol($4->getName(),$3->getName());
+            else {
+                SymbolInfo* temp=new SymbolInfo($4->getName(),$3->getName(),false, parameterOffset);
+                table->insertSymbol(temp);
+                parameterOffset+=2;
+            }
             typeList.push_back($3->getName());
             string rule="parameter_list : parameter_list COMMA type_specifier ID";
             $$ = new NonTerminalData();
@@ -516,7 +571,12 @@ parameter_list  : parameter_list COMMA type_specifier ID
                 else errorRedeclaration($2->getName(),$2->getStart(),true);
             }
             else if($1->getName()=="VOID") errorVoidParameter($1->getName(),$1->getStart());
-            table->insertSymbol($2->getName(),$1->getName());
+            if(!inFunctionScope)table->insertSymbol($2->getName(),$1->getName());
+            else {
+                SymbolInfo* temp=new SymbolInfo($2->getName(),$1->getName(),false, parameterOffset);
+                table->insertSymbol(temp);
+                parameterOffset+=2;
+            }
             typeList.push_back($1->getName());
             string rule="parameter_list : type_specifier ID";
             $$ = new NonTerminalData();
@@ -622,8 +682,18 @@ declaration_list : declaration_list COMMA ID
                 else errorRedefinition($3->getName(),$3->getStart());
             }
             else if(type=="VOID")errorVoidDeclaration($3->getName(),$3->getStart());
-            table->insertSymbol($3->getName(),type);
             string rule="declaration_list : declaration_list COMMA ID";
+            if(inFunctionScope){
+                tempCode<<"\tSUB SP, 2"<<endl;
+                tempLineCount++;
+                SymbolInfo* temp=new SymbolInfo($3->getName(),type,false, stackOffset);
+                table->insertSymbol(temp);
+                stackOffset-=2;
+            }
+            else {
+                codeOutput<<"\t"<<$3->getName()<<" DW 1 DUP (0000H)"<<endl;
+                table->insertSymbol($3->getName(),type);
+            }
             $$ = new NonTerminalData();
             $$->endLineNumber=$3->getEnd();
             $$->startLineNumber=$1->getStart();
@@ -641,8 +711,19 @@ declaration_list : declaration_list COMMA ID
                 else errorRedefinition($3->getName(),$3->getStart());
             }
             else if(type=="VOID")errorVoidDeclaration($3->getName(),$3->getStart());
-            table->insertSymbol(new SymbolInfo($3->getName(),type,false,true));
             string rule="declaration_list : declaration_list COMMA ID LSQUARE CONST_INT RSQUARE";
+            if(inFunctionScope){
+                tempCode<<"\tSUB SP, "<<2*stoi($5->getName())<<endl;
+                tempLineCount++;
+                SymbolInfo* temp=new SymbolInfo($3->getName(),type,false, stackOffset,false,true);
+                table->insertSymbol(temp);
+                stackOffset-=2*stoi($5->getName());
+            }
+            else {
+                codeOutput<<"\t"<<$3->getName()<<" DW "<<$5->getName()<<" DUP (0000H)"<<endl;
+                SymbolInfo* temp=new SymbolInfo($3->getName(),type,false,true);
+                table->insertSymbol(temp);
+            }
             $$ = new NonTerminalData();
             $$->endLineNumber=$6->getEnd();
             $$->startLineNumber=$1->getStart();
@@ -662,7 +743,17 @@ declaration_list : declaration_list COMMA ID
                 else errorRedefinition($1->getName(),$1->getStart());
             }
             else if(type=="VOID")errorVoidDeclaration($1->getName(),$1->getStart());
-            table->insertSymbol($1->getName(),type);
+            if(inFunctionScope){
+                tempCode<<"\tSUB SP, 2"<<endl;
+                tempLineCount++;
+                SymbolInfo* temp=new SymbolInfo($1->getName(),type,false, stackOffset);
+                table->insertSymbol(temp);
+                stackOffset-=2;
+            }
+            else {
+                codeOutput<<"\t"<<$1->getName()<<" DW 1 DUP (0000H)"<<endl;
+                table->insertSymbol($1->getName(),type);
+            }
             string rule="declaration_list : ID";
             $$ = new NonTerminalData();
             $$->endLineNumber=$1->getEnd();
@@ -679,7 +770,18 @@ declaration_list : declaration_list COMMA ID
                 else errorRedefinition($1->getName(),$1->getStart());
             }
             else if(type=="VOID")errorVoidDeclaration($1->getName(),$1->getStart());
-            table->insertSymbol(new SymbolInfo($1->getName(),type,false,true));
+            if(inFunctionScope){
+                tempCode<<"\tSUB SP, "<<2*stoi($3->getName())<<endl;
+                tempLineCount++;
+                SymbolInfo* temp=new SymbolInfo($1->getName(),type,false, stackOffset,false,true);
+                table->insertSymbol(temp);
+                stackOffset-=2*stoi($3->getName());
+            }
+            else {
+                codeOutput<<"\t"<<$1->getName()<<" DW "<<$3->getName()<<" DUP (0000H)"<<endl;
+                SymbolInfo* temp=new SymbolInfo($1->getName(),type,false,true);
+                table->insertSymbol(temp);
+            }
             string rule="declaration_list : ID LSQUARE CONST_INT RSQUARE";
             $$ = new NonTerminalData();
             $$->endLineNumber=$4->getEnd();
@@ -740,7 +842,7 @@ statement : var_declaration
             $$->expandedParseTree.push_back($1);
             logAndSetParseString(rule,$$);
         }
-        | FOR LPAREN enterFunctionScope expression_statement expression_statement expression RPAREN statement
+        | FOR LPAREN {enterScopeFlag=false;table->enterScope();} expression_statement expression_statement expression RPAREN statement
         {
             table->printAllScope(logOutput);
             table->exitScope();
@@ -801,10 +903,20 @@ statement : var_declaration
         }
         | PRINTLN LPAREN ID RPAREN SEMICOLON
         {
-            if(table->lookUpSymbol($3->getName())==NULL){
+            SymbolInfo* temp=table->lookUpSymbol($3->getName());
+            if(temp==NULL){
                 errorUndeclaredVariable($3->getName(),$3->getStart(),"VARIABLE");
             }
             string rule="statement : PRINTLN LPAREN ID RPAREN SEMICOLON";
+            if(temp->getIsGlobal())tempCode<<"\tMOV AX, "<<temp->getName()<<endl;
+            else {
+                int offset=temp->getStackOffset();
+                if(offset>0)tempCode<<"\tMOV AX, [BP+"<<offset<<"]\n";
+                else tempCode<<"\tMOV AX, [BP"<<offset<<"]\n";
+            }
+            tempCode<<"\tCALL print_output\n";
+            tempCode<<"\tCALL new_line\n";
+            tempLineCount+=3;
             $$ = new NonTerminalData();
             $$->endLineNumber=$5->getEnd();
             $$->startLineNumber=$1->getStart();
@@ -822,6 +934,8 @@ statement : var_declaration
             }
             returnVariableList.push_back($2);
             string rule="statement : RETURN expression SEMICOLON";
+            tempCode<<"\tJMP exit_"<<functionName<<endl;
+            tempLineCount++;
             $$ = new NonTerminalData();
             $$->endLineNumber=$3->getEnd();
             $$->startLineNumber=$1->getStart();
@@ -834,6 +948,8 @@ statement : var_declaration
 
 expression_statement 	: SEMICOLON		
         {
+            tempCode<<"\tPOP AX"<<endl;
+            tempLineCount++;
             string rule="expression_statement : SEMICOLON";
             $$ = new NonTerminalData();
             $$->endLineNumber=$1->getEnd();
@@ -843,6 +959,8 @@ expression_statement 	: SEMICOLON
         }
 		| expression SEMICOLON 
         {
+            tempCode<<"\tPOP AX"<<endl;
+            tempLineCount++;
             string rule="expression_statement : expression SEMICOLON";
             $$ = new NonTerminalData();
             $$->endLineNumber=$2->getEnd();
@@ -870,11 +988,13 @@ variable : ID
             }
             string rule="variable : ID";
             $$ = new NonTerminalData();
+            $$->symbolInfo=symbol;
             $$->endLineNumber=$1->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
             if(symbol!=NULL)$$->name=symbol->getType();
             else $$->name="ERROR";
+            $$->symbolInfo=symbol;
             logAndSetParseString(rule,$$);
         }
         | ID LSQUARE expression RSQUARE 
@@ -891,6 +1011,7 @@ variable : ID
             }
             string rule="variable : ID LSQUARE expression RSQUARE";
             $$ = new NonTerminalData();
+            $$->symbolInfo=symbol;
             $$->endLineNumber=$4->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
@@ -915,12 +1036,51 @@ expression : logic_expression
         }
         | variable ASSIGNOP logic_expression 
         {
+            SymbolInfo* symbol=$1->symbolInfo;
             if($3->getName()=="VOID"){
                 errorInvalidVoidAssignment($3->getStart());
             }
             if($1->getName()=="INT" && $3->getName()=="FLOAT"){
                 warningDataLoss($1->getStart());
             }
+            if(symbol->getIsArray()){
+                tempCode<<"\tPOP AX\n";
+                tempCode<<"\tPOP BX\n";
+                tempCode<<"\tSHL BX, 1\n";
+                tempLineCount+=3;
+                if(symbol->getIsGlobal()){
+                    tempCode<<"\tMOV BYTE PTR "<<symbol->getName()<<"[BX], AX"<<endl;
+                    tempLineCount++;    
+                }
+                else{
+                    int offset=symbol->getStackOffset();
+                    tempCode<<"\tMOV SI, BX\n";
+                    tempLineCount++;
+                    if(offset>0){
+                        tempCode<<"\tADD SI, "<<offset<<endl;
+                        tempLineCount++;
+                    }
+                    else {
+                        tempCode<<"\tADD SI, "<<-offset<<endl;
+                        tempCode<<"\tNEG SI\n";
+                        tempLineCount+=2;
+                    }
+                    tempCode<<"\tMOV [BP+SI], AX"<<endl;
+                    tempLineCount++;
+                } 
+            }
+            else{
+                tempCode<<"\tPOP AX\n";
+                if(symbol->getIsGlobal())tempCode<<"\tMOV "<<symbol->getName()<<", AX"<<endl;
+                else{
+                    int offset=symbol->getStackOffset();
+                    if(offset>0)tempCode<<"\tMOV [BP+"<<offset<<"], AX \n";
+                    if(offset<0)tempCode<<"\tMOV [BP"<<offset<<"], AX\n";
+                }
+                tempLineCount+=2;
+            }
+            tempCode<<"\tPUSH AX\n";
+            tempLineCount++;
             string rule="expression : variable ASSIGNOP logic_expression";
             $$ = new NonTerminalData();
             $$->endLineNumber=$3->getEnd();
@@ -1004,6 +1164,12 @@ simple_expression : term
             }
             string rule="simple_expression : simple_expression ADDOP term";
             $$ = new NonTerminalData();
+            tempCode<<"\tPOP BX\n";
+            tempCode<<"\tPOP AX\n";
+            if($2->getName()=="+")tempCode<<"\tADD AX, BX\n";
+            else tempCode<<"\tSUB AX, BX\n";
+            tempCode<<"\tPUSH AX\n";
+            tempLineCount+=4;
             $$->endLineNumber=$3->getEnd();
             $$->startLineNumber=$1->getStart();
             $$->expandedParseTree.push_back($1);
@@ -1053,6 +1219,22 @@ term :	unary_expression
             else{
                 $$->name="INT";
             }
+            tempCode<<"\tPOP BX\n";
+            tempCode<<"\tPOP AX\n";
+            tempCode<<"\tCWD\n";
+            if($2->getName()=="*"){
+                tempCode<<"\tMUL BX\n";
+                tempCode<<"\tPUSH AX\n";
+            }
+            else if($2->getName()=="/"){
+                tempCode<<"\tDIV BX\n";
+                tempCode<<"\tPUSH AX\n";
+            }
+            else if($2->getName()=="%"){
+                tempCode<<"\tDIV BX\n";
+                tempCode<<"\tPUSH DX\n";
+            }
+            tempLineCount+=5;
             $$->expandedParseTree.push_back($1);
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($2));
             $$->expandedParseTree.push_back($3);
@@ -1066,6 +1248,12 @@ unary_expression : ADDOP unary_expression
                 errorInvalidVoidExpression($1->getStart());
             }
             string rule="unary_expression : ADDOP unary_expression";
+            if($1->getName()=="-"){
+                tempCode<<"\tPOP AX\n";
+                tempCode<<"\tNEG AX\n";
+                tempCode<<"\tPUSH AX\n";
+                tempLineCount+=3;
+            }
             $$ = new NonTerminalData();
             $$->endLineNumber=$2->getEnd();
             $$->startLineNumber=$1->getStart();
@@ -1104,6 +1292,45 @@ unary_expression : ADDOP unary_expression
 factor	: variable 
         {
             string rule="factor : variable";
+            SymbolInfo* symbol = $1->symbolInfo;
+            if(symbol->getIsArray()){
+                tempCode<<"\tPOP BX"<<endl;
+                tempCode<<"\tSHL BX, 1"<<endl;
+                tempLineCount+=2;
+                if(symbol->getIsGlobal()){
+                    tempCode<<"\tMOV AX, "<<symbol->getName()<<"[BX]\n";
+                    tempLineCount++;
+                }
+                else{
+                    int offset=symbol->getStackOffset();
+                    tempCode<<"\tMOV SI, BX\n";
+                    tempLineCount++;
+                    if(offset>0){
+                        tempCode<<"\tADD SI, "<<offset<<endl;
+                        tempLineCount++;
+                    }
+                    else {
+                        tempCode<<"\tADD SI, "<<-offset<<endl;
+                        tempCode<<"\tNEG SI\n";
+                        tempLineCount+=2;
+                    }
+                    tempCode<<"\tMOV AX, [BP+SI]\n";
+                    tempLineCount++;
+                }
+            }
+            else{
+                if(symbol->getIsGlobal()){
+                    tempCode<<"\tMOV AX, "<<symbol->getName()<<"\n";
+                }
+                else{
+                    int offset=symbol->getStackOffset();
+                    if(offset>0)tempCode<<"\tMOV AX, [BP+"<<offset<<"]\n";
+                    if(offset<0)tempCode<<"\tMOV AX, [BP"<<offset<<"]\n";
+                }
+                tempLineCount++;
+            }
+            tempCode<<"\tPUSH AX\n";
+            tempLineCount++;
             $$ = new NonTerminalData();
             $$->endLineNumber=$1->getEnd();
             $$->startLineNumber=$1->getStart();
@@ -1131,6 +1358,9 @@ factor	: variable
                     }
                 }
             }
+            tempCode<<"\tCALL "<<$1->getName()<<"\n";
+            tempCode<<"\tPUSH AX\n";
+            tempLineCount+=2;
             string rule="factor : ID LPAREN argument_list RPAREN";
             $$ = new NonTerminalData();
             $$->endLineNumber=$4->getEnd();
@@ -1163,6 +1393,9 @@ factor	: variable
             $$->startLineNumber=$1->getStart();
             $$->name="INT";
             $$->value=stoi($1->getName());
+            tempCode<<"\tMOV AX,"<<$$->value<<endl;
+            tempCode<<"\tPUSH AX"<<endl;
+            tempLineCount+=2;
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
             logAndSetParseString(rule,$$);
         }
@@ -1174,6 +1407,9 @@ factor	: variable
             $$->startLineNumber=$1->getStart();
             $$->name="FLOAT";
             $$->value=stof($1->getName());
+            tempCode<<"\tMOV AX,"<<$$->value<<endl;
+            tempCode<<"\tPUSH AX"<<endl;
+            tempLineCount+=2;
             $$->expandedParseTree.push_back(getNonTerminalDataForTerminal($1));
             logAndSetParseString(rule,$$);
         }
@@ -1183,6 +1419,59 @@ factor	: variable
                 errorInvalidVoidExpression($1->getStart());
             }
             string rule="factor : variable INCOP";
+            SymbolInfo* symbol = $1->symbolInfo;
+            if(symbol->getIsArray()){
+                tempCode<<"\tPOP BX"<<endl;
+                tempCode<<"\tSHL BX, 1"<<endl;
+                tempLineCount+=2;
+                if(symbol->getIsGlobal()){
+                    tempCode<<"\tMOV AX, "<<symbol->getName()<<"[BX]\n";
+                    tempCode<<"\tINC AX\n";
+                    tempCode<<"\tMOV "<<symbol->getName()<<"[BX], AX\n";
+                    tempLineCount+=3;
+                }
+                else{
+                    int offset=symbol->getStackOffset();
+                    tempCode<<"\tMOV SI, BX\n";
+                    tempLineCount++;
+                    if(offset>0){
+                        tempCode<<"\tADD SI, "<<offset<<endl;
+                        tempLineCount++;
+                    }
+                    else {
+                        tempCode<<"\tADD SI, "<<-offset<<endl;
+                        tempCode<<"\tNEG SI\n";
+                        tempLineCount+=2;
+                    }
+                    tempCode<<"\tMOV AX, [BP+SI]\n";
+                    tempCode<<"\tINC AX\n";
+                    tempCode<<"\tMOV [BP+SI], AX\n";
+                    tempLineCount+=3;
+                }
+            }
+            else{
+                if(symbol->getIsGlobal()){
+                    tempCode<<"\tMOV AX, "<<symbol->getName()<<"\n";
+                    tempCode<<"\tINC AX\n";
+                    tempCode<<"\tMOV "<<symbol->getName()<<", AX\n";
+                }
+                else{
+                    int offset=symbol->getStackOffset();
+                    if(offset>0){
+                        tempCode<<"\tMOV AX, [BP+"<<offset<<"]\n";
+                        tempCode<<"\tINC AX\n";
+                        tempCode<<"\tMOV [BP+"<<offset<<"], AX\n";
+                    }
+                    if(offset<0){
+                        tempCode<<"\tMOV AX, [BP"<<offset<<"]\n";
+                        tempCode<<"\tINC AX\n";
+                        tempCode<<"\tMOV [BP"<<offset<<"], AX\n";
+                    }
+                }
+                tempLineCount+=3;
+            }
+            tempCode<<"\tPUSH AX\n";
+            tempLineCount++;
             $$ = new NonTerminalData();
             $$->endLineNumber=$2->getEnd();
             $$->startLineNumber=$1->getStart();
@@ -1197,6 +1486,59 @@ factor	: variable
                 errorInvalidVoidExpression($1->getStart());
             }
             string rule="factor : variable DECOP";
+            SymbolInfo* symbol = $1->symbolInfo;
+            if(symbol->getIsArray()){
+                tempCode<<"\tPOP BX"<<endl;
+                tempCode<<"\tSHL BX, 1"<<endl;
+                tempLineCount+=2;
+                if(symbol->getIsGlobal()){
+                    tempCode<<"\tMOV AX, "<<symbol->getName()<<"[BX]\n";
+                    tempCode<<"\tINC AX\n";
+                    tempCode<<"\tMOV "<<symbol->getName()<<"[BX], AX\n";
+                    tempLineCount+=3;
+                }
+                else{
+                    int offset=symbol->getStackOffset();
+                    tempCode<<"\tMOV SI, BX\n";
+                    tempLineCount++;
+                    if(offset>0){
+                        tempCode<<"\tADD SI, "<<offset<<endl;
+                        tempLineCount++;
+                    }
+                    else {
+                        tempCode<<"\tADD SI, "<<-offset<<endl;
+                        tempCode<<"\tNEG SI\n";
+                        tempLineCount+=2;
+                    }
+                    tempCode<<"\tMOV AX, [BP+SI]\n";
+                    tempCode<<"\tDEC AX\n";
+                    tempCode<<"\tMOV [BP+SI], AX\n";
+                    tempLineCount+=3;
+                }
+            }
+            else{
+                if(symbol->getIsGlobal()){
+                    tempCode<<"\tMOV AX, "<<symbol->getName()<<"\n";
+                    tempCode<<"\tINC AX\n";
+                    tempCode<<"\tMOV "<<symbol->getName()<<", AX\n";
+                }
+                else{
+                    int offset=symbol->getStackOffset();
+                    if(offset>0){
+                        tempCode<<"\tMOV AX, [BP+"<<offset<<"]\n";
+                        tempCode<<"\tINC AX\n";
+                        tempCode<<"\tMOV [BP+"<<offset<<"], AX\n";
+                    }
+                    if(offset<0){
+                        tempCode<<"\tMOV AX, [BP"<<offset<<"]\n";
+                        tempCode<<"\tDEC AX\n";
+                        tempCode<<"\tMOV [BP"<<offset<<"], AX\n";
+                    }
+                }
+                tempLineCount+=3;
+            }
+            tempCode<<"\tPUSH AX\n";
+            tempLineCount++;
             $$ = new NonTerminalData();
             $$->endLineNumber=$2->getEnd();
             $$->startLineNumber=$1->getStart();
@@ -1257,6 +1599,14 @@ enterFunctionScope :
             table->enterScope();
             inFunctionScope=true;
             enterScopeFlag=false;
+            tempCode<<functionName<<" PROC"<<endl;
+            tempLineCount++;
+            if(functionName=="main"){
+                tempCode<<"\tMOV AX, @DATA\n\tMOV DS, AX"<<endl;
+                tempLineCount+=2;
+            }
+            tempCode<<"\tPUSH BP\n\tMOV BP, SP"<<endl;
+            tempLineCount+=2;
         }
         ;
 
@@ -1282,13 +1632,19 @@ int main(int argc,char *argv[])
     parseOutput.open("1905026_parse.txt");
 	errorOutput.open("1905026_error.txt");
 	logOutput.open("1905026_log.txt");
-
+    codeOutput.open("1905026_code.asm");
+    optimizedCodeOutput.open("1905026_optimized_code.asm");
+    tempCode.open("tempCode.asm");
+    codeOutput<<".MODEL SMALL\n.STACK 1000H\n.Data\nCR EQU 0DH\nLF EQU 0AH\nnumber DB \"00000$\""<<endl;
 	yyin=fileInput;
 	yyparse();
 	fclose(fileInput);
     parseOutput.close();
     errorOutput.close();
     logOutput.close();
+    codeOutput.close();
+    optimizedCodeOutput.close();
+    remove("tempCode.asm");
 	delete table;
 	return 0;
 }

@@ -3,8 +3,8 @@
 
 class SymbolInfo {
     std::string name, type;
-    int start, end;
-    bool isFunction = false, isArray = false, isdefined = false;
+    int start, end, stackOffset;
+    bool isFunction = false, isArray = false, isdefined = false, isGlobal=true;
     std::vector<std::string> functionTypeList;
     SymbolInfo *next;
 public:
@@ -25,6 +25,22 @@ public:
         this->type = type;
         this->start = start;
         this->end = end;
+        this->isFunction = isFunction;
+        this->isArray = isArray;
+        next = NULL;
+    }
+    SymbolInfo(std::string name, std::string type,bool isGlobal,int stackOffset) {
+        this->name = name;
+        this->type = type;
+        this->isGlobal=isGlobal;
+        this->stackOffset=stackOffset;
+        next = NULL;
+    }
+    SymbolInfo(std::string name, std::string type,bool isGlobal,int stackOffset,bool isFunction,bool isArray) {
+        this->name = name;
+        this->type = type;
+        this->isGlobal=isGlobal;
+        this->stackOffset=stackOffset;
         this->isFunction = isFunction;
         this->isArray = isArray;
         next = NULL;
@@ -53,6 +69,12 @@ public:
     }
     bool getIsDefined() {
         return isdefined;
+    }
+    bool getIsGlobal() {
+        return isGlobal;
+    }
+    int getStackOffset() {
+        return stackOffset;
     }
     std::vector<std::string> getFunctionTypeList() {
         return functionTypeList;
@@ -84,6 +106,10 @@ public:
     }
     void addFunctionType(std::string type) {
         functionTypeList.push_back(type);
+    }
+
+    std::string toString() {
+        return "Name: " + name + " Type: " + type + " Start:" + std::to_string(start) + " End: " + std::to_string(end) + " isFunction: " + std::to_string(isFunction) + " isArray: " + std::to_string(isArray) + " isDefined: " + std::to_string(isdefined) + " isGlobal: " + std::to_string(isGlobal) + " stackOffset: " + std::to_string(stackOffset);
     }
 
 };

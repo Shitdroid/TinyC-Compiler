@@ -11,4 +11,4 @@ g++ -w -c -o l.o lex.yy.c
 echo 'Generated the scanner object file'
 g++ y.o l.o -lfl -g -o 1905026
 echo 'All ready, running'
-valgrind --leak-check=yes --track-origins=yes --log-file=valgrind-out.txt ./1905026 no_error.c
+valgrind --leak-check=yes --track-origins=yes --log-file=valgrind-out.txt ./1905026 $1

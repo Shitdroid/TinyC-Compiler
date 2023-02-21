@@ -6,7 +6,6 @@
 
 #include<bits/stdc++.h>
 
-#include "SymbolTable.h"
 #include "NonTerminalData.h"
 #include "y.tab.h"
 

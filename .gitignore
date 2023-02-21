@@ -1,7 +1,8 @@
-/resources
+/Resources
 *.o
 *.tab.*
 *.txt
 1905026
 *.zip
 lex.yy.c
+*.asm
